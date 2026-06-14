@@ -25,70 +25,104 @@
     #info-panel button {
       margin-top: 10px;
     }
+    #status-banner {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 14px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font: 14px/1.4 sans-serif;
+      z-index: 1001;
+      display: none;
+    }
   </style>
 
   <script src="https://cdn.jsdelivr.net/npm/3d-force-graph"></script>
-  <script src="https://unpkg.com/neo4j-driver"></script>
 </head>
 
 <body>
+  <div id="status-banner">Loading network…</div>
   <div id="3d-graph"></div>
   <div id="info-panel"></div>
 
   <script>
-    const driver = neo4j.driver("neo4j+s://7714be1a.databases.neo4j.io", neo4j.auth.basic("neo4j", "lwW-hWpruNTNNrD-gCAMreXMZcUlAFcrjxmaeL94ZzM"));
-    const session = driver.session({ database: "neo4j" });
-    const start = new Date();
+    const DATA_SOURCES = [
+      'graph-data.json',
+      'https://awuchen.github.io/craft-network/graph-data.json',
+    ];
 
-    session
-      .run(
-        'MATCH (u:User)-[r:CONNECTED_TO]->(v:User) RETURN u.name AS source, u.role AS sourceRole, u.title AS sourceTitle, u.website AS sourceWebsite, v.name AS target, v.role AS role, v.title AS title, v.website AS website LIMIT $limit', 
-        { limit: neo4j.int(5000) }
-      )
-      .then(function (result) {
-        const links = result.records.map(r => ({ 
-          source: r.get('source'), 
-          target: r.get('target')  
-        }));
+    function showStatus(message) {
+      const banner = document.getElementById('status-banner');
+      banner.textContent = message;
+      banner.style.display = message ? 'block' : 'none';
+    }
 
-        const nodesMap = new Map();
+    function nodeLabel(node) {
+      const text = node.title || node.role || 'N/A';
+      return window.innerWidth <= 768
+        ? `<div style="font-size: 40px;">${text}</div>`
+        : text;
+    }
 
-        result.records.forEach(r => {
-          const addNode = (id, role, title, website) => {
-            if (!nodesMap.has(id)) {
-              nodesMap.set(id, { id, name: id, role, title, website });
-            }
-          };
-
-          addNode(r.get('source'), r.get('sourceRole'), r.get('sourceTitle'), r.get('sourceWebsite'));
-          addNode(r.get('target'), r.get('role'), r.get('title'), r.get('website'));
+    function renderGraph(gData) {
+      const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
+        .graphData(gData)
+        .nodeLabel(nodeLabel)
+        .onNodeHover(node => {
+          Graph.nodeLabel(node ? nodeLabel : (n => n.role || 'N/A'));
+        })
+        .onNodeClick(node => {
+          const infoPanel = document.getElementById('info-panel');
+          infoPanel.innerHTML = `
+            <h3>Network Info</h3>
+            <p><strong>Name:</strong> ${node.name}</p>
+            <p><strong>Title:</strong> ${node.title || 'N/A'}</p>
+            <p><strong>Role:</strong> ${node.role || 'N/A'}</p>
+            <p><strong>Website:</strong> ${node.website && node.website !== '' ? `<a href="${node.website}" target="_blank" rel="noopener noreferrer">${node.website.length > 30 ? `${node.website.substring(0, 30)}...` : node.website}</a>` : ''}</p>
+            <button onclick="document.getElementById('info-panel').style.display='none'">Close</button>
+          `;
+          infoPanel.style.display = 'block';
         });
 
-        const nodes = Array.from(nodesMap.values());
+      showStatus('');
+      return Graph;
+    }
 
-        const gData = { nodes, links };
+    async function loadGraphData() {
+      let lastError = null;
 
-        const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
-          .graphData(gData)
-          .nodeLabel(node => window.innerWidth <= 768 ? `<div style="font-size: 40px;">${node.title || node.role || 'N/A'}</div>` : node.title || node.role || 'N/A')
-          .onNodeHover(node => {
-            Graph.nodeLabel(node ? (n => window.innerWidth <= 768 ? `<div style="font-size: 40px;">${n.title || n.role || 'N/A'}</div>` : n.title || n.role || 'N/A') : (n => n.role || 'N/A'));
-          })
-          .onNodeClick(node => {
-            const infoPanel = document.getElementById('info-panel');
-            infoPanel.innerHTML = `
-              <h3>Network Info</h3>
-              <p><strong>Name:</strong> ${node.name}</p>
-              <p><strong>Title:</strong> ${node.title || 'N/A'}</p>
-              <p><strong>Role:</strong> ${node.role || 'N/A'}</p>
-              <p><strong>Website:</strong> ${node.website && node.website !== '' ? `<a href="${node.website}" target="_blank" rel="noopener noreferrer">${node.website.length > 30 ? `${node.website.substring(0, 30)}...` : node.website}</a>` : ''}</p>
-              <button onclick="document.getElementById('info-panel').style.display='none'">Close</button>
-            `;
-            infoPanel.style.display = 'block';
-          });
+      for (const source of DATA_SOURCES) {
+        try {
+          const response = await fetch(source, { cache: 'no-cache' });
+          if (!response.ok) {
+            throw new Error(`${source} returned ${response.status}`);
+          }
+          const payload = await response.json();
+          if (!payload.nodes || !payload.links) {
+            throw new Error(`${source} missing nodes/links`);
+          }
+          return payload;
+        } catch (error) {
+          lastError = error;
+          console.warn('Graph data source failed:', source, error);
+        }
+      }
 
-        session.close();
+      throw lastError || new Error('No graph data sources available');
+    }
+
+    showStatus('Loading network…');
+    loadGraphData()
+      .then(payload => {
+        renderGraph({ nodes: payload.nodes, links: payload.links });
+        console.log(`Loaded ${payload.nodes.length} nodes, ${payload.links.length} links`);
       })
-      .catch(error => console.error("Error running query:", error));
+      .catch(error => {
+        console.error('Error loading graph:', error);
+        showStatus('Could not load network data. Run craft-network export-3d-graph or check Neo4j keep-alive.');
+      });
   </script>
 </body>
